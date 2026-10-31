@@ -71,6 +71,9 @@ Options:
                                 May be repeated.
   --changed                     Mutate added and modified source files from
                                 git status.
+  --changed-since <ref>         Mutate source files added or modified since
+                                the merge base of <ref> and HEAD: commits,
+                                staged and unstaged edits, and untracked files.
   --scan                        List mutation sites. Do not run tests or
                                 write metrics.
   --mutate-all                  Run every covered site, including ones the
@@ -154,6 +157,7 @@ class Options:
     mutation_warning: int = 50
     max_workers: int | None = None
     changed: bool = False
+    changed_since: str | None = None
     verbose: bool = False
 
 
@@ -243,6 +247,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 options.changed = True
                 index += 1
                 continue
+            if arg == "--changed-since":
+                options.changed_since = _take(args, index, arg)
+                index += 2
+                continue
             if arg == "--scan":
                 options.scan = True
                 index += 1
@@ -269,6 +277,12 @@ def parse_args(argv: list[str] | None = None) -> Options:
         return Options(
             action="help",
             message=f"--mutate-all cannot be combined with --since-last-run\n\n{HELP}",
+            exit_code=1,
+        )
+    if options.changed and options.changed_since:
+        return Options(
+            action="help",
+            message=f"--changed cannot be combined with --changed-since\n\n{HELP}",
             exit_code=1,
         )
     if options.no_coverage and options.coverage_command:
@@ -332,15 +346,34 @@ def _changed_files(root: Path) -> list[Path]:
         "--",
         ".",
     )
+    names = [entry[3:] for entry in status.split(b"\0") if len(entry) > 3]
+    return _existing_under(root, toplevel, names)
+
+
+def _files_since(root: Path, ref: str) -> list[Path]:
+    """Files added or modified since the merge base of `ref` and HEAD.
+
+    This is the branch's review scope: its commits, staged and unstaged
+    edits, and untracked files. Commits `ref` gained later are not included.
+    """
+
+    toplevel = Path(os.fsdecode(_git(root, "rev-parse", "--show-toplevel")).strip())
+    base = os.fsdecode(_git(root, "merge-base", ref, "HEAD")).strip()
+    changed = _git(root, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=d", base, "--", ".")
+    untracked = _git(root, "ls-files", "-z", "--others", "--exclude-standard", "--full-name", "--", ".")
+    names = [name for name in (changed + untracked).split(b"\0") if name]
+    return _existing_under(root, toplevel, names)
+
+
+def _existing_under(root: Path, toplevel: Path, names: list[bytes]) -> list[Path]:
+    """Repository-relative names that are files under `root`; deletions drop out."""
+
     root_resolved = root.resolve()
     found: list[Path] = []
-    for entry in status.split(b"\0"):
-        if len(entry) <= 3:
-            continue
-        path = (toplevel / os.fsdecode(entry[3:])).resolve()
-        if not path.is_file() or not path.is_relative_to(root_resolved):
-            continue
-        found.append(path)
+    for name in names:
+        path = (toplevel / os.fsdecode(name)).resolve()
+        if path.is_file() and path.is_relative_to(root_resolved):
+            found.append(path)
     return found
 
 
@@ -358,11 +391,11 @@ def _positionals(root: Path, args: list[str]) -> tuple[list[Path], list[str]]:
     return existing, filters
 
 
-def _changed_sources(root: Path, crapper) -> list[Path]:
+def _changed_sources(root: Path, crapper, changed: list[Path]) -> list[Path]:
     skip = set(crapper.discover.SKIP_DIRS) | set(crapper.discover.TEST_DIRS)
     root_resolved = root.resolve()
     files = []
-    for path in _changed_files(root):
+    for path in changed:
         relative = path.relative_to(root_resolved)
         if not skip.isdisjoint(relative.parts):
             continue
@@ -396,7 +429,9 @@ def _explicit_sources(existing: list[Path], crapper) -> list[Path]:
 
 def _choose_files(options: Options, root: Path, existing: list[Path], crapper) -> list[Path]:
     if options.changed:
-        return _changed_sources(root, crapper)
+        return _changed_sources(root, crapper, _changed_files(root))
+    if options.changed_since:
+        return _changed_sources(root, crapper, _files_since(root, options.changed_since))
     if options.source_roots:
         return crapper.discover.iter_source_files([(root / path).resolve() for path in options.source_roots])
     if existing:

@@ -20,6 +20,7 @@ The first run of a tree executes every covered mutant. Start with the file you a
 ./mutator src/demo/core.clj          # one file, or a directory
 ./mutator --scan src/demo           # list sites, do not run tests
 ./mutator --changed                 # git additions and edits
+./mutator --changed-since main      # everything the branch changed since main
 ./mutator --mutate-all              # rerun killed mutants too
 ./mutator --no-coverage             # do not skip uncovered lines
 ./mutator --use-existing-coverage   # read reports already on disk
@@ -28,6 +29,8 @@ The first run of a tree executes every covered mutant. Start with the file you a
 ```
 
 Once a snapshot exists, the next run is differential. It reruns survivors and every site in a function whose text changed. Killed mutants in an unchanged function stay killed. `--since-last-run` is that same selection. `--mutate-all` ignores it.
+
+`--changed` reads `git status`, so it sees only uncommitted work. `--changed-since <ref>` takes the merge base of `<ref>` and `HEAD` and selects what changed from there: the branch's commits, staged and unstaged edits, and untracked files. Commits that `<ref>` gained after the branch started are not selected. It chooses files; the snapshot still decides which of their sites rerun.
 
 Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail. Exit `3` when a mutant survives. A failed baseline does not rewrite the snapshot.
 
